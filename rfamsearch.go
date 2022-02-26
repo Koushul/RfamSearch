@@ -37,15 +37,14 @@ const (
 )
 
 type Results struct {
-	closed                string
-	searchSequence        string
-	opened                string
-	numHits               float64
-	started               string
-	jobId                 string
-	rna                   string
-	coloredSearchSequence string
-	rnaMatch              []RNAMatch
+	closed         string
+	searchSequence string
+	opened         string
+	numHits        float64
+	started        string
+	jobId          string
+	rna            string
+	rnaMatch       []RNAMatch
 }
 
 type RNAMatch struct {
@@ -218,7 +217,4 @@ func main() {
 
 		}
 	}
-
-	fmt.Println(jobs)
-
 }
