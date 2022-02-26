@@ -11,18 +11,30 @@ import (
 
 	"github.com/mitchellh/colorstring"
 	"github.com/mitchellh/mapstructure"
-	// github.com/mitchellh/mapstructure
 )
 
 const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
 
 type Job struct {
+	Sequence      string
+	Status        State
 	JobId         string `json:"jobId"`
 	Opened        string `json:"opened"`
 	EstimatedTime string `json:"estimatedTime"`
 	ResultURL     string `json:"resultURL"`
 	httpClient    *http.Client
+	Results       Results
 }
+
+type State int64
+
+const (
+	Completed State = iota
+	Created
+	Submitted
+	Pending
+	Error
+)
 
 type Results struct {
 	closed                string
@@ -56,15 +68,10 @@ type RNAMatch struct {
 	}
 }
 
-type RfamClient struct {
-	host       string
-	httpClient *http.Client
-}
-
-func (c *RfamClient) submit(seq string) Job {
+func (j *Job) submit() {
 
 	data := url.Values{}
-	data.Set("seq", seq)
+	data.Set("seq", j.Sequence)
 
 	r, _ := http.NewRequest("POST", rfamSequenceSearchEndpoint, strings.NewReader(data.Encode()))
 
@@ -72,7 +79,7 @@ func (c *RfamClient) submit(seq string) Job {
 	r.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Add("Accept", "application/json")
 
-	res, err := c.httpClient.Do(r)
+	res, err := j.httpClient.Do(r)
 
 	if err != nil {
 		panic(err)
@@ -82,18 +89,16 @@ func (c *RfamClient) submit(seq string) Job {
 
 	body, _ := ioutil.ReadAll(res.Body)
 
-	var job Job
-	err2 := json.Unmarshal(body, &job)
+	err2 := json.Unmarshal(body, &j)
 	if err2 != nil {
 		panic(err2)
 	}
 
-	job.httpClient = c.httpClient
+	j.Status = Submitted
 
-	return job
 }
 
-func (j *Job) getResults() Results {
+func (j *Job) getResults() {
 
 	r, err := http.NewRequest("GET", j.ResultURL, strings.NewReader(url.Values{}.Encode()))
 	if err != nil {
@@ -115,22 +120,23 @@ func (j *Job) getResults() Results {
 
 	defer res.Body.Close()
 
-	var results Results
+	results := &j.Results
 	var f map[string]interface{}
 
 	err2 := json.Unmarshal(body, &f)
+
 	if err2 != nil {
 		panic(err2)
 	}
 
 	for k, v := range f {
 		switch k {
+		case "status":
+			j.Status = Pending
 		case "closed":
 			results.closed = v.(string)
 		case "searchSequence":
 			results.searchSequence = v.(string)
-			results.coloredSearchSequence = DNAColorize(results.searchSequence)
-
 		case "opened":
 			results.opened = v.(string)
 		case "started":
@@ -155,7 +161,9 @@ func (j *Job) getResults() Results {
 		}
 	}
 
-	return results
+	if results.closed != "" {
+		j.Status = Completed
+	}
 
 }
 
@@ -167,14 +175,50 @@ func DNAColorize(s string) string {
 func main() {
 
 	defaultTimeout := time.Second * 10
-	rfam := RfamClient{rfamSequenceSearchEndpoint, &http.Client{Timeout: defaultTimeout}}
-	job := rfam.submit("CGGGAATAGCTCAGTTGGCTAGAGCATCAGCCTTCCAAGCTGAGGGTCGCGGGTTCGAGCCCCGTTTCCCGCTC")
 
-	time.Sleep(time.Second * 15)
+	var seqs [3]string
 
-	r := job.getResults()
+	seqs[0] = "GGGGGATTAGCTCAGTTTGGGAGAGCGCCTGCTTTGCACGCAGGAGGTCAGCGGTTCGAGCCCGCTATCCTCCAC"
+	seqs[1] = "CGGGAATAGCTCAGTTGGCTAGAGCATCAGCCTTCCAAGCTGAGGGTCGCGGGTTCGAGCCCCGTTTCCCGCTC"
+	seqs[2] = "TGGGGTATCGCCAAGCGGTAAGGCACCTGGTTTTGGTCCAGGCATTCCGAGGTTCGAATCCTTGTACCCCAGCCA"
 
-	colorstring.Print(r.coloredSearchSequence, '')
-	fmt.Println('\t', r.rna)
+	var jobs []Job
+
+	for _, s := range seqs {
+		j := Job{
+			Status:     Created,
+			Sequence:   s,
+			httpClient: &http.Client{Timeout: defaultTimeout},
+		}
+		jobs = append(jobs, j)
+	}
+
+	completes := 0
+
+	for completes != 3 {
+		for idx := range jobs {
+			job := &jobs[idx]
+
+			switch job.Status {
+			case Created:
+				fmt.Println("Submitting...")
+				job.submit()
+			case Submitted:
+				job.getResults()
+			case Error:
+				fmt.Println("Some Jobs failed")
+			case Pending:
+				job.getResults()
+			case Completed:
+				completes++
+				colorstring.Print(DNAColorize(job.Results.searchSequence))
+				fmt.Println("\t", job.Results.rna)
+			}
+			time.Sleep(time.Second * 10)
+
+		}
+	}
+
+	fmt.Println(jobs)
 
 }
