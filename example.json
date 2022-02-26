@@ -1,0 +1,30 @@
+{
+    "closed": "2022-02-26 04:48:13",
+    "searchSequence": "CGGGAATAGCTCAGTTGGCTAGAGCATCAGCCTTCCAAGCTGAGGGTCGCGGGTTCGAGCCCCGTTTCCCGCTC",
+    "hits": {
+        "tRNA": [
+            {
+                "score": "60.4",
+                "E": "9.5e-14",
+                "acc": "RF00005",
+                "end": "73",
+                "alignment": {
+                    "user_seq": "#SEQ           1 <[0]*CGGGAAUAGCUCAGUuGGCuAGAGCAUCAGCCUUCCAAGCUGAGGGuCGCGGGUUCGAGCCCCGUUUCCCGCU 73        ",
+                    "hit_seq": "#CM            1 <[1]*gagauaUAGCucAgU.GGU.AgaGCgucgGaCUuaaAAuCcgaagg.cgcgGGUUCgAaUCCcgcuaucucCa 71        ",
+                    "ss": "#SS              ~~~~~((((((,,<<<<___.___._>>>>,<<<<<_______>>>>>,,,.,<<<<<_______>>>>>))))))):           ",
+                    "match": "#MATCH                ::G::AUAGCUCAGU GG  AGAGC+UC:G:CUU  AA:C:GA GG C:CGGGUUCGA  CCCG:U::C::C            ",
+                    "pp": "#PP              .....****************9999*****************************************************           ",
+                    "nc": "#NC                                                                                          ?            "
+                },
+                "strand": "+",
+                "id": "tRNA",
+                "GC": "0.62",
+                "start": "1"
+            }
+        ]
+    },
+    "opened": "2022-02-26 04:48:07",
+    "numHits": 1,
+    "started": "2022-02-26 04:48:10",
+    "jobId": "4AADF1AE-96BF-11EC-8542-4EBBCCF2C37B"
+}
