@@ -1,5 +1,5 @@
 # RfamSearch
 
-Search the Rfam database for a large number of sequences in parallel.
+Simple but high performance Rfam client to search for RNAs
 
 ![plot](./figures/code.png)
