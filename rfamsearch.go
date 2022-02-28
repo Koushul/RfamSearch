@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mitchellh/colorstring"
@@ -19,6 +20,7 @@ const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
 type Job struct {
 	Sequence      string
 	Status        State
+	LastChecked   time.Time
 	HTTPDesc      string
 	JobId         string `json:"jobId"`
 	Opened        string `json:"opened"`
@@ -121,6 +123,7 @@ func (j *Job) getResults() {
 
 	res, getErr := j.httpClient.Do(r)
 	j.HTTPDesc = serverResponses[res.StatusCode]
+	j.LastChecked = time.Now()
 
 	defer r.Body.Close()
 
@@ -184,6 +187,8 @@ func DNAColorize(s string) string {
 	return replacer.Replace(s)
 }
 
+var wg sync.WaitGroup
+
 //Creates new Job from a DNA sequence
 func jobMaker(workerId int, httpClient *http.Client, sequences <-chan string, newJobs chan<- Job) {
 	for s := range sequences {
@@ -201,7 +206,7 @@ func jobMaker(workerId int, httpClient *http.Client, sequences <-chan string, ne
 func jobSubmitter(workerId int, newJobs <-chan Job, submittedJobs chan<- Job) {
 	for j := range newJobs {
 		j.submit()
-		fmt.Printf("[%v] Submitted new Sequence\n", workerId)
+		fmt.Printf("[%v] Submitted new Sequence.\n", workerId)
 
 		submittedJobs <- j
 	}
@@ -209,13 +214,18 @@ func jobSubmitter(workerId int, newJobs <-chan Job, submittedJobs chan<- Job) {
 
 func resultsFetcher(workerId int, submittedJobs chan Job, completedJobs chan<- Job) {
 	for j := range submittedJobs {
-		time.Sleep(time.Second * 5)
-		j.getResults()
+		if time.Since(j.LastChecked) > time.Second*10 {
+			j.getResults()
+			fmt.Printf("[%v] Fetching Job Results\n", workerId)
+		}
+
 		if j.Status == Completed {
 			fmt.Printf("[%v] Completed!\n", workerId)
+			colorstring.Print(DNAColorize(j.Results.searchSequence))
+			fmt.Println("\t", j.Results.rna)
 			completedJobs <- j
+			wg.Done()
 		} else {
-			fmt.Printf("[%v] Job still running...\n", workerId)
 			submittedJobs <- j
 		}
 	}
@@ -242,8 +252,18 @@ func readFasta(filename string) []string {
 
 func main() {
 
-	defaultTimeout := time.Second * 10
+	//initialize shared http client
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 100
+	t.MaxConnsPerHost = 100
+	t.MaxIdleConnsPerHost = 100
 
+	httpClient := &http.Client{
+		Timeout:   time.Second * 10,
+		Transport: t,
+	}
+
+	//read fasta file with input sequences
 	seqs := readFasta(os.Args[1])
 
 	//make channels
@@ -251,16 +271,6 @@ func main() {
 	newJobs := make(chan Job, len(seqs))
 	submittedJobs := make(chan Job, len(seqs))
 	completedJobs := make(chan Job, len(seqs))
-
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 100
-	t.MaxConnsPerHost = 100
-	t.MaxIdleConnsPerHost = 100
-
-	httpClient := &http.Client{
-		Timeout:   defaultTimeout,
-		Transport: t,
-	}
 
 	for w := 1; w <= 5; w++ {
 		go jobMaker(w, httpClient, sequences, newJobs)
@@ -270,18 +280,15 @@ func main() {
 
 	for _, s := range seqs {
 		sequences <- s
+		wg.Add(1)
 	}
 	close(sequences)
 
-	var finishedJobs = make([]Job, len(seqs))
-
-	for cj := range completedJobs {
-		colorstring.Println(DNAColorize(cj.Results.searchSequence))
-		finishedJobs = append(finishedJobs, cj)
-		if len(finishedJobs) == len(seqs) {
-			close(completedJobs)
-			break
-		}
-	}
+	// var finishedJobs = make([]Job, len(seqs))
+	wg.Wait()
 
 }
+
+//TODO: Add Progressbar
+//TODO: Save results to file
+//TODO: Refactor folder structures
