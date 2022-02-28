@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,16 +19,16 @@ import (
 const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
 
 type Job struct {
-	Sequence      string
-	Status        State
-	LastChecked   time.Time
-	HTTPDesc      string
-	JobId         string `json:"jobId"`
-	Opened        string `json:"opened"`
-	EstimatedTime string `json:"estimatedTime"`
-	ResultURL     string `json:"resultURL"`
-	httpClient    *http.Client
-	Results       Results
+	ID          int
+	Sequence    string
+	Status      State
+	LastChecked time.Time
+	HTTPDesc    string
+	JobId       string `json:"jobId"`
+	Opened      string `json:"opened"`
+	ResultURL   string `json:"resultURL"`
+	httpClient  *http.Client
+	Results     Results
 }
 
 type State int64
@@ -73,6 +74,7 @@ type RNAMatch struct {
 
 var serverResponses = map[int]string{
 	202: "Accepted",
+	201: "Submitted",
 	502: "Bad gateway",
 	503: "Service unavailable",
 	200: "OK",
@@ -98,6 +100,8 @@ func (j *Job) submit() {
 		panic(err)
 	}
 
+	j.HTTPDesc = serverResponses[res.StatusCode]
+
 	defer res.Body.Close()
 
 	body, _ := ioutil.ReadAll(res.Body)
@@ -122,6 +126,7 @@ func (j *Job) getResults() {
 	r.Header.Add("Accept", "application/json")
 
 	res, getErr := j.httpClient.Do(r)
+
 	j.HTTPDesc = serverResponses[res.StatusCode]
 	j.LastChecked = time.Now()
 
@@ -193,6 +198,7 @@ var wg sync.WaitGroup
 func jobMaker(workerId int, httpClient *http.Client, sequences <-chan string, newJobs chan<- Job) {
 	for s := range sequences {
 		j := Job{
+			ID:         len(sequences),
 			Status:     Ready,
 			Sequence:   s,
 			httpClient: httpClient,
@@ -203,33 +209,32 @@ func jobMaker(workerId int, httpClient *http.Client, sequences <-chan string, ne
 
 }
 
-func jobSubmitter(workerId int, newJobs <-chan Job, submittedJobs chan<- Job) {
+func jobSubmitter(workerId int, newJobs chan Job, submittedJobs chan<- Job) {
 	for j := range newJobs {
 		j.submit()
-		fmt.Printf("[%v] Submitted new Sequence.\n", workerId)
-
+		fmt.Printf("[%v] Submitted new Sequence. JobID: %v\n", workerId, j.JobId)
 		submittedJobs <- j
 	}
 }
 
-func resultsFetcher(workerId int, submittedJobs chan Job, completedJobs chan<- Job) {
+func resultsFetcher(workerId int, nseqs int, submittedJobs chan Job, finishedJobs []Job) {
 	for j := range submittedJobs {
 		if time.Since(j.LastChecked) > time.Second*10 {
 			j.getResults()
-			fmt.Printf("[%v] Fetching Job Results\n", workerId)
 		}
 
 		if j.Status == Completed {
-			fmt.Printf("[%v] Completed!\n", workerId)
 			colorstring.Print(DNAColorize(j.Results.searchSequence))
 			fmt.Println("\t", j.Results.rna)
-			completedJobs <- j
+			tmpJob := j
+			finishedJobs[j.ID] = tmpJob
 			wg.Done()
+
 		} else {
+			//if job isn't completed, send it back to the channel
 			submittedJobs <- j
 		}
 	}
-
 }
 
 func readFasta(filename string) []string {
@@ -258,24 +263,35 @@ func main() {
 	t.MaxConnsPerHost = 100
 	t.MaxIdleConnsPerHost = 100
 
-	httpClient := &http.Client{
-		Timeout:   time.Second * 10,
+	Client := &http.Client{
+		Timeout:   time.Second * 30,
 		Transport: t,
 	}
 
+	tick := time.Now()
+
+	filename := os.Args[1]
+	numWorkers, err := strconv.Atoi(os.Args[2])
+
+	if err != nil {
+		panic(err)
+	}
+
 	//read fasta file with input sequences
-	seqs := readFasta(os.Args[1])
+	seqs := readFasta(filename)
+	fmt.Printf("Created %v sequences.\n", len(seqs))
+
+	var finishedJobs = make([]Job, len(seqs))
 
 	//make channels
 	sequences := make(chan string, len(seqs))
 	newJobs := make(chan Job, len(seqs))
-	submittedJobs := make(chan Job, len(seqs))
-	completedJobs := make(chan Job, len(seqs))
+	pendingJobs := make(chan Job, len(seqs))
 
-	for w := 1; w <= 5; w++ {
-		go jobMaker(w, httpClient, sequences, newJobs)
-		go jobSubmitter(w, newJobs, submittedJobs)
-		go resultsFetcher(w, submittedJobs, completedJobs)
+	for w := 1; w <= numWorkers; w++ {
+		go jobMaker(w, Client, sequences, newJobs)
+		go jobSubmitter(w, newJobs, pendingJobs)
+		go resultsFetcher(w, len(seqs), pendingJobs, finishedJobs)
 	}
 
 	for _, s := range seqs {
@@ -284,8 +300,13 @@ func main() {
 	}
 	close(sequences)
 
-	// var finishedJobs = make([]Job, len(seqs))
 	wg.Wait()
+
+	elapsed := time.Since(tick)
+
+	fmt.Printf("Completed %v jobs in %s\n", len(finishedJobs), elapsed)
+
+	// fmt.Println(finishedJobs)
 
 }
 
