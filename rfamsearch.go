@@ -72,7 +72,7 @@ func (j *Job) submit() {
 	data := url.Values{}
 	data.Set("seq", j.Sequence)
 
-	r, _ := http.NewRequest("POST", rfamSequenceSearchEndpoint, strings.NewReader(data.Encode()))
+	r, _ := http.NewRequest(http.MethodPost, rfamSequenceSearchEndpoint, strings.NewReader(data.Encode()))
 
 	r.Header.Add("Expect", "")
 	r.Header.Add("Content-Type", "application/x-www-form-urlencoded")
@@ -99,7 +99,7 @@ func (j *Job) submit() {
 
 func (j *Job) getResults() {
 
-	r, err := http.NewRequest("GET", j.ResultURL, strings.NewReader(url.Values{}.Encode()))
+	r, err := http.NewRequest(http.MethodGet, j.ResultURL, strings.NewReader(url.Values{}.Encode()))
 	if err != nil {
 		panic(err)
 	}
@@ -167,7 +167,7 @@ func (j *Job) getResults() {
 }
 
 func DNAColorize(s string) string {
-	replacer := strings.NewReplacer("A", "[red]C", "T", "[blue]T", "G", "[green]G", "C", "[yellow]C")
+	replacer := strings.NewReplacer("A", "[red]A", "T", "[blue]T", "G", "[green]G", "C", "[yellow]C")
 	return replacer.Replace(s)
 }
 
@@ -175,37 +175,45 @@ func main() {
 
 	defaultTimeout := time.Second * 10
 
-	var seqs [3]string
+	var seqs [1]string
 
-	seqs[0] = "GGGGGATTAGCTCAGTTTGGGAGAGCGCCTGCTTTGCACGCAGGAGGTCAGCGGTTCGAGCCCGCTATCCTCCAC"
-	seqs[1] = "CGGGAATAGCTCAGTTGGCTAGAGCATCAGCCTTCCAAGCTGAGGGTCGCGGGTTCGAGCCCCGTTTCCCGCTC"
-	seqs[2] = "TGGGGTATCGCCAAGCGGTAAGGCACCTGGTTTTGGTCCAGGCATTCCGAGGTTCGAATCCTTGTACCCCAGCCA"
+	// seqs[0] = os.Args[1]
+	seqs[0] = "CGGGAATAGCTCAGTTGGCTAGAGCATCAGCCTTCCAAGCTGAGGGTCGCGGGTTCGAGCCCCGTTTCCCGCTC"
+	// seqs[2] = "TGGGGTATCGCCAAGCGGTAAGGCACCTGGTTTTGGTCCAGGCATTCCGAGGTTCGAATCCTTGTACCCCAGCCA"
 
 	var jobs []Job
+
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 100
+	t.MaxConnsPerHost = 100
+	t.MaxIdleConnsPerHost = 100
+
+	httpClient := &http.Client{
+		Timeout:   defaultTimeout,
+		Transport: t,
+	}
 
 	for _, s := range seqs {
 		j := Job{
 			Status:     Created,
 			Sequence:   s,
-			httpClient: &http.Client{Timeout: defaultTimeout},
+			httpClient: httpClient,
 		}
 		jobs = append(jobs, j)
 	}
 
 	completes := 0
 
-	for completes != 3 {
+	for completes != len(jobs) {
 		for idx := range jobs {
 			job := &jobs[idx]
 
 			switch job.Status {
 			case Created:
-				fmt.Println("Submitting...")
 				job.submit()
 			case Submitted:
 				job.getResults()
 			case Error:
-				fmt.Println("Some Jobs failed")
 			case Pending:
 				job.getResults()
 			case Completed:
@@ -213,8 +221,10 @@ func main() {
 				colorstring.Print(DNAColorize(job.Results.searchSequence))
 				fmt.Println("\t", job.Results.rna)
 			}
-			time.Sleep(time.Second * 10)
+			time.Sleep(time.Second * 5)
 
 		}
 	}
+
+	// fmt.Println(jobs[0])
 }
