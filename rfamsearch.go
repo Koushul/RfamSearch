@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
 type Job struct {
 	Sequence      string
 	Status        State
+	HTTPDesc      string
 	JobId         string `json:"jobId"`
 	Opened        string `json:"opened"`
 	EstimatedTime string `json:"estimatedTime"`
@@ -30,10 +32,10 @@ type State int64
 
 const (
 	Completed State = iota
-	Created
+	Ready
 	Submitted
 	Pending
-	Error
+	Failed
 )
 
 type Results struct {
@@ -65,6 +67,16 @@ type RNAMatch struct {
 		Pp       string `json:"pp"`
 		Nc       string `json:"nc"`
 	}
+}
+
+var serverResponses = map[int]string{
+	202: "Accepted",
+	502: "Bad gateway",
+	503: "Service unavailable",
+	200: "OK",
+	410: "Gone",
+	510: "Service unvailable",
+	500: "Internal server error",
 }
 
 func (j *Job) submit() {
@@ -108,6 +120,7 @@ func (j *Job) getResults() {
 	r.Header.Add("Accept", "application/json")
 
 	res, getErr := j.httpClient.Do(r)
+	j.HTTPDesc = serverResponses[res.StatusCode]
 
 	defer r.Body.Close()
 
@@ -171,17 +184,73 @@ func DNAColorize(s string) string {
 	return replacer.Replace(s)
 }
 
+//Creates new Job from a DNA sequence
+func jobMaker(workerId int, httpClient *http.Client, sequences <-chan string, newJobs chan<- Job) {
+	for s := range sequences {
+		j := Job{
+			Status:     Ready,
+			Sequence:   s,
+			httpClient: httpClient,
+		}
+
+		newJobs <- j
+	}
+
+}
+
+func jobSubmitter(workerId int, newJobs <-chan Job, submittedJobs chan<- Job) {
+	for j := range newJobs {
+		j.submit()
+		fmt.Printf("[%v] Submitted new Sequence\n", workerId)
+
+		submittedJobs <- j
+	}
+}
+
+func resultsFetcher(workerId int, submittedJobs chan Job, completedJobs chan<- Job) {
+	for j := range submittedJobs {
+		time.Sleep(time.Second * 5)
+		j.getResults()
+		if j.Status == Completed {
+			fmt.Printf("[%v] Completed!\n", workerId)
+			completedJobs <- j
+		} else {
+			fmt.Printf("[%v] Job still running...\n", workerId)
+			submittedJobs <- j
+		}
+	}
+
+}
+
+func readFasta(filename string) []string {
+	var seqs []string
+
+	file, err := ioutil.ReadFile(filename)
+	if err != nil {
+		panic(err)
+	}
+
+	data := strings.Split(string(file), ">")
+
+	for _, entry := range data[1:] {
+		sq := strings.Split(entry, "\n")
+		seqs = append(seqs, sq[1])
+	}
+
+	return seqs
+}
+
 func main() {
 
 	defaultTimeout := time.Second * 10
 
-	var seqs [1]string
+	seqs := readFasta(os.Args[1])
 
-	// seqs[0] = os.Args[1]
-	seqs[0] = "CGGGAATAGCTCAGTTGGCTAGAGCATCAGCCTTCCAAGCTGAGGGTCGCGGGTTCGAGCCCCGTTTCCCGCTC"
-	// seqs[2] = "TGGGGTATCGCCAAGCGGTAAGGCACCTGGTTTTGGTCCAGGCATTCCGAGGTTCGAATCCTTGTACCCCAGCCA"
-
-	var jobs []Job
+	//make channels
+	sequences := make(chan string, len(seqs))
+	newJobs := make(chan Job, len(seqs))
+	submittedJobs := make(chan Job, len(seqs))
+	completedJobs := make(chan Job, len(seqs))
 
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
@@ -193,38 +262,26 @@ func main() {
 		Transport: t,
 	}
 
+	for w := 1; w <= 5; w++ {
+		go jobMaker(w, httpClient, sequences, newJobs)
+		go jobSubmitter(w, newJobs, submittedJobs)
+		go resultsFetcher(w, submittedJobs, completedJobs)
+	}
+
 	for _, s := range seqs {
-		j := Job{
-			Status:     Created,
-			Sequence:   s,
-			httpClient: httpClient,
-		}
-		jobs = append(jobs, j)
+		sequences <- s
 	}
+	close(sequences)
 
-	completes := 0
+	var finishedJobs = make([]Job, len(seqs))
 
-	for completes != len(jobs) {
-		for idx := range jobs {
-			job := &jobs[idx]
-
-			switch job.Status {
-			case Created:
-				job.submit()
-			case Submitted:
-				job.getResults()
-			case Error:
-			case Pending:
-				job.getResults()
-			case Completed:
-				completes++
-				colorstring.Print(DNAColorize(job.Results.searchSequence))
-				fmt.Println("\t", job.Results.rna)
-			}
-			time.Sleep(time.Second * 5)
-
+	for cj := range completedJobs {
+		colorstring.Println(DNAColorize(cj.Results.searchSequence))
+		finishedJobs = append(finishedJobs, cj)
+		if len(finishedJobs) == len(seqs) {
+			close(completedJobs)
+			break
 		}
 	}
 
-	// fmt.Println(jobs[0])
 }
