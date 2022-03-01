@@ -12,9 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gosuri/uilive"
+	"github.com/gosuri/uiprogress"
 	"github.com/mitchellh/mapstructure"
-	"github.com/schollz/progressbar/v3"
 )
 
 const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
@@ -24,11 +23,9 @@ type Job struct {
 	Sequence    string //sequence to search Rfam for
 	Status      State
 	LastChecked time.Time //last time the job status was checked via a get request
-	HTTPDesc    string    //last server response. used for tracking errors
 	JobId       string    `json:"jobId"`
 	Opened      string    `json:"opened"`
 	ResultURL   string    `json:"resultURL"`
-	httpClient  *http.Client
 	Results     Results
 }
 
@@ -85,7 +82,7 @@ var serverResponses = map[int]string{
 }
 
 //Submit a sequence to Rfam
-func (j *Job) submit() {
+func (j *Job) submit(httpClient *http.Client) {
 
 	data := url.Values{}
 	data.Set("seq", j.Sequence)
@@ -96,13 +93,11 @@ func (j *Job) submit() {
 	r.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Add("Accept", "application/json")
 
-	res, err := j.httpClient.Do(r)
+	res, err := httpClient.Do(r)
 
 	if err != nil {
 		panic(err)
 	}
-
-	j.HTTPDesc = serverResponses[res.StatusCode]
 
 	defer res.Body.Close()
 
@@ -118,7 +113,7 @@ func (j *Job) submit() {
 }
 
 //Check if Job has finished running and grab the results
-func (j *Job) getResults() {
+func (j *Job) getResults(httpClient *http.Client) {
 	r, err := http.NewRequest(http.MethodGet, j.ResultURL, strings.NewReader(url.Values{}.Encode()))
 	r.Close = true
 
@@ -129,8 +124,7 @@ func (j *Job) getResults() {
 	r.Header.Add("Expect", "")
 	r.Header.Add("Accept", "application/json")
 
-	res, getErr := j.httpClient.Do(r)
-	j.HTTPDesc = serverResponses[res.StatusCode]
+	res, getErr := httpClient.Do(r)
 	j.LastChecked = time.Now()
 
 	defer r.Body.Close()
@@ -197,29 +191,25 @@ func DNAColorize(s string) string {
 
 var wg sync.WaitGroup
 
-// func jobSubmitter(newJobs chan Job, pendingJobs chan<- Job) {
-// 	for j := range newJobs {
-// 		j.submit()
-// 		fmt.Printf("Submitted new Sequence %v. JobID: %v\n", j.ID, j.JobId)
-// 		pendingJobs <- j
-// 		time.Sleep(time.Second * 5)
-// 	}
-// }
+func jobSubmitter(newJobs chan Job, pendingJobs chan<- Job, client *http.Client, bar *uiprogress.Bar) {
+	for j := range newJobs {
+		j.submit(client)
+		pendingJobs <- j
+		bar.Incr()
+	}
+}
 
-func resultsFetcher(pendingJobs chan Job, finishedJobs []Job, bar *progressbar.ProgressBar) {
+func resultsFetcher(pendingJobs chan Job, finishedJobs []Job, client *http.Client, bar *uiprogress.Bar) {
 	for j := range pendingJobs {
 
-		if time.Since(j.LastChecked) > time.Second*5 {
-			j.getResults()
-
+		if time.Since(j.LastChecked) > time.Second*10 {
+			j.getResults(client)
 		}
 
 		if j.Status == Completed {
-
 			tmpJob := j
 			finishedJobs[j.ID] = tmpJob
-
-			bar.Add(1)
+			bar.Incr()
 			wg.Done()
 
 		} else {
@@ -255,8 +245,13 @@ func main() {
 	t.MaxConnsPerHost = 100
 	t.MaxIdleConnsPerHost = 100
 
-	Client := &http.Client{
-		Timeout:   time.Second * 30,
+	postClient := &http.Client{
+		Timeout:   time.Second * 200,
+		Transport: t,
+	}
+
+	getClient := &http.Client{
+		Timeout:   time.Second * 200,
 		Transport: t,
 	}
 
@@ -269,42 +264,68 @@ func main() {
 		panic(err)
 	}
 
+	// filename := "test.fasta"
+	// numWorkers := 5
+
 	//read fasta file with input sequences
 	seqs := readFasta(filename)
+	wg.Add(len(seqs))
 
 	var finishedJobs = make([]Job, len(seqs))
-	writer := uilive.New()
-	writer.Start()
 
-	pendingJobs := make(chan Job)
+	pendingJobs := make(chan Job, len(seqs))
+	newJobs := make(chan Job, len(seqs))
 
-	bar := progressbar.Default(int64(len(seqs)))
+	jobsBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
+	submittedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
+	completedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
+
+	jobsBar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("🐡 Created   %d/%d jobs", b.Current(), len(seqs))
+	})
+
+	submittedBar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("🐒 Submitted %d/%d jobs", b.Current(), len(seqs))
+	})
+
+	completedBar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("🦊 Completed %d/%d jobs", b.Current(), len(seqs))
+	})
+
+	uiprogress.Start()
 
 	// Concurrent job submission in high volume makes the server 😠
-	// for w := 1; w <= 3; w++ {
-	// 	go jobSubmitter(newJobs, pendingJobs)
-	// }
+	for w := 1; w <= 10; w++ {
+		go jobSubmitter(newJobs, pendingJobs, getClient, submittedBar)
+	}
 
 	// Spawn the workers who check if a job has finished running and grabs the results
 	// These workers work in the background as new jobs are continuously (slowly) created
 	for w := 1; w <= numWorkers; w++ {
-		go resultsFetcher(pendingJobs, finishedJobs, bar)
+		go resultsFetcher(pendingJobs, finishedJobs, postClient, completedBar)
 	}
 
-	for i, s := range seqs {
-		j := Job{
-			ID:         i,
-			Status:     Ready,
-			Sequence:   s,
-			httpClient: Client,
+	batchSize := 10
+
+	for i := 0; i < len(seqs); i += batchSize {
+		k := i + batchSize
+		if k > len(seqs) {
+			k = len(seqs)
 		}
-		j.submit()
-		pendingJobs <- j
-		time.Sleep(time.Second * 5)
-		wg.Add(1)
-	}
 
-	// fmt.Printf("Created %v sequences.\n", len(seqs))
+		for idx, s := range seqs[i:k] {
+			j := Job{
+				ID:       i + idx,
+				Status:   Ready,
+				Sequence: s,
+			}
+
+			newJobs <- j
+			jobsBar.Incr()
+		}
+		time.Sleep(time.Second * 5)
+
+	}
 
 	wg.Wait()
 
@@ -322,10 +343,10 @@ func main() {
 		}
 
 	}
+	// fmt.Println(finishedJobs)
+	uiprogress.Stop()
 
 	fmt.Printf("Completed %v jobs in %s\n", len(finishedJobs), elapsed)
-
-	// fmt.Println(finishedJobs)
 
 }
 
