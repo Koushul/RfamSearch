@@ -12,21 +12,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mitchellh/colorstring"
+	"github.com/gosuri/uilive"
 	"github.com/mitchellh/mapstructure"
+	"github.com/schollz/progressbar/v3"
 )
 
 const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
 
 type Job struct {
-	ID          int
-	Sequence    string
+	ID          int    //unique job id, also serves as index for the final output array
+	Sequence    string //sequence to search Rfam for
 	Status      State
-	LastChecked time.Time
-	HTTPDesc    string
-	JobId       string `json:"jobId"`
-	Opened      string `json:"opened"`
-	ResultURL   string `json:"resultURL"`
+	LastChecked time.Time //last time the job status was checked via a get request
+	HTTPDesc    string    //last server response. used for tracking errors
+	JobId       string    `json:"jobId"`
+	Opened      string    `json:"opened"`
+	ResultURL   string    `json:"resultURL"`
 	httpClient  *http.Client
 	Results     Results
 }
@@ -83,13 +84,14 @@ var serverResponses = map[int]string{
 	500: "Internal server error",
 }
 
+//Submit a sequence to Rfam
 func (j *Job) submit() {
 
 	data := url.Values{}
 	data.Set("seq", j.Sequence)
 
 	r, _ := http.NewRequest(http.MethodPost, rfamSequenceSearchEndpoint, strings.NewReader(data.Encode()))
-
+	r.Close = true
 	r.Header.Add("Expect", "")
 	r.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Add("Accept", "application/json")
@@ -115,9 +117,11 @@ func (j *Job) submit() {
 
 }
 
+//Check if Job has finished running and grab the results
 func (j *Job) getResults() {
-
 	r, err := http.NewRequest(http.MethodGet, j.ResultURL, strings.NewReader(url.Values{}.Encode()))
+	r.Close = true
+
 	if err != nil {
 		panic(err)
 	}
@@ -126,7 +130,6 @@ func (j *Job) getResults() {
 	r.Header.Add("Accept", "application/json")
 
 	res, getErr := j.httpClient.Do(r)
-
 	j.HTTPDesc = serverResponses[res.StatusCode]
 	j.LastChecked = time.Now()
 
@@ -194,45 +197,34 @@ func DNAColorize(s string) string {
 
 var wg sync.WaitGroup
 
-//Creates new Job from a DNA sequence
-func jobMaker(workerId int, httpClient *http.Client, sequences <-chan string, newJobs chan<- Job) {
-	for s := range sequences {
-		j := Job{
-			ID:         len(sequences),
-			Status:     Ready,
-			Sequence:   s,
-			httpClient: httpClient,
-		}
+// func jobSubmitter(newJobs chan Job, pendingJobs chan<- Job) {
+// 	for j := range newJobs {
+// 		j.submit()
+// 		fmt.Printf("Submitted new Sequence %v. JobID: %v\n", j.ID, j.JobId)
+// 		pendingJobs <- j
+// 		time.Sleep(time.Second * 5)
+// 	}
+// }
 
-		newJobs <- j
-	}
+func resultsFetcher(pendingJobs chan Job, finishedJobs []Job, bar *progressbar.ProgressBar) {
+	for j := range pendingJobs {
 
-}
-
-func jobSubmitter(workerId int, newJobs chan Job, submittedJobs chan<- Job) {
-	for j := range newJobs {
-		j.submit()
-		fmt.Printf("[%v] Submitted new Sequence. JobID: %v\n", workerId, j.JobId)
-		submittedJobs <- j
-	}
-}
-
-func resultsFetcher(workerId int, nseqs int, submittedJobs chan Job, finishedJobs []Job) {
-	for j := range submittedJobs {
-		if time.Since(j.LastChecked) > time.Second*10 {
+		if time.Since(j.LastChecked) > time.Second*5 {
 			j.getResults()
+
 		}
 
 		if j.Status == Completed {
-			colorstring.Print(DNAColorize(j.Results.searchSequence))
-			fmt.Println("\t", j.Results.rna)
+
 			tmpJob := j
 			finishedJobs[j.ID] = tmpJob
+
+			bar.Add(1)
 			wg.Done()
 
 		} else {
 			//if job isn't completed, send it back to the channel
-			submittedJobs <- j
+			pendingJobs <- j
 		}
 	}
 }
@@ -279,30 +271,57 @@ func main() {
 
 	//read fasta file with input sequences
 	seqs := readFasta(filename)
-	fmt.Printf("Created %v sequences.\n", len(seqs))
 
 	var finishedJobs = make([]Job, len(seqs))
+	writer := uilive.New()
+	writer.Start()
 
-	//make channels
-	sequences := make(chan string, len(seqs))
-	newJobs := make(chan Job, len(seqs))
-	pendingJobs := make(chan Job, len(seqs))
+	pendingJobs := make(chan Job)
 
+	bar := progressbar.Default(int64(len(seqs)))
+
+	// Concurrent job submission in high volume makes the server 😠
+	// for w := 1; w <= 3; w++ {
+	// 	go jobSubmitter(newJobs, pendingJobs)
+	// }
+
+	// Spawn the workers who check if a job has finished running and grabs the results
+	// These workers work in the background as new jobs are continuously (slowly) created
 	for w := 1; w <= numWorkers; w++ {
-		go jobMaker(w, Client, sequences, newJobs)
-		go jobSubmitter(w, newJobs, pendingJobs)
-		go resultsFetcher(w, len(seqs), pendingJobs, finishedJobs)
+		go resultsFetcher(pendingJobs, finishedJobs, bar)
 	}
 
-	for _, s := range seqs {
-		sequences <- s
+	for i, s := range seqs {
+		j := Job{
+			ID:         i,
+			Status:     Ready,
+			Sequence:   s,
+			httpClient: Client,
+		}
+		j.submit()
+		pendingJobs <- j
+		time.Sleep(time.Second * 5)
 		wg.Add(1)
 	}
-	close(sequences)
+
+	// fmt.Printf("Created %v sequences.\n", len(seqs))
 
 	wg.Wait()
 
 	elapsed := time.Since(tick)
+
+	f, err := os.Create("data.txt")
+	if err != nil {
+		panic(err)
+	}
+	for idx, j := range finishedJobs {
+		s := fmt.Sprintf("%v %v\n", idx, j.Results.rna)
+		_, err2 := f.WriteString(s)
+		if err2 != nil {
+			panic(err2)
+		}
+
+	}
 
 	fmt.Printf("Completed %v jobs in %s\n", len(finishedJobs), elapsed)
 
@@ -310,6 +329,5 @@ func main() {
 
 }
 
-//TODO: Add Progressbar
-//TODO: Save results to file
 //TODO: Refactor folder structures
+//TODO: Add flags & single sequence search
