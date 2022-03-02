@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gosuri/uiprogress"
+	"github.com/mitchellh/colorstring"
 	"github.com/mitchellh/mapstructure"
 )
 
@@ -84,6 +85,10 @@ var serverResponses = map[int]string{
 //Submit a sequence to Rfam
 func (j *Job) submit(httpClient *http.Client) {
 
+	if !(j.Status == Ready) {
+		panic("Job not Ready")
+	}
+
 	data := url.Values{}
 	data.Set("seq", j.Sequence)
 
@@ -114,6 +119,11 @@ func (j *Job) submit(httpClient *http.Client) {
 
 //Check if Job has finished running and grab the results
 func (j *Job) getResults(httpClient *http.Client) {
+
+	if !(j.Status == Submitted || j.Status == Pending) {
+		panic(fmt.Sprintf("Unsubmitted Job(%v) %v", j.ID, j.Status))
+	}
+
 	r, err := http.NewRequest(http.MethodGet, j.ResultURL, strings.NewReader(url.Values{}.Encode()))
 	r.Close = true
 
@@ -178,8 +188,10 @@ func (j *Job) getResults(httpClient *http.Client) {
 		}
 	}
 
-	if results.closed != "" {
+	if results.closed != "" && j.ResultURL != "" {
 		j.Status = Completed
+	} else {
+		j.Status = Submitted
 	}
 
 }
@@ -194,15 +206,22 @@ var wg sync.WaitGroup
 func jobSubmitter(newJobs chan Job, pendingJobs chan<- Job, client *http.Client, bar *uiprogress.Bar) {
 	for j := range newJobs {
 		j.submit(client)
-		pendingJobs <- j
-		bar.Incr()
+
+		if j.ResultURL == "" {
+			j.Status = Ready
+			newJobs <- j
+
+		} else {
+			pendingJobs <- j
+			bar.Incr()
+		}
 	}
 }
 
 func resultsFetcher(pendingJobs chan Job, finishedJobs []Job, client *http.Client, bar *uiprogress.Bar) {
 	for j := range pendingJobs {
 
-		if time.Since(j.LastChecked) > time.Second*10 {
+		if time.Since(j.LastChecked) > time.Second*5 {
 			j.getResults(client)
 		}
 
@@ -319,24 +338,30 @@ func main() {
 				Status:   Ready,
 				Sequence: s,
 			}
-
 			newJobs <- j
 			jobsBar.Incr()
 		}
 		time.Sleep(time.Second * 5)
-
 	}
 
-	wg.Wait()
+	wg.Wait() //wg.Done() is called by resultsFetchers
+	uiprogress.Stop()
+
+	fmt.Println("")
 
 	elapsed := time.Since(tick)
 
+	//save results to file and display matches
 	f, err := os.Create("data.txt")
 	if err != nil {
 		panic(err)
 	}
 	for idx, j := range finishedJobs {
 		s := fmt.Sprintf("%v %v\n", idx, j.Results.rna)
+		if j.Results.rna != "" {
+			colorstring.Print(DNAColorize(j.Sequence))
+			fmt.Println("\t", j.Results.rna)
+		}
 		_, err2 := f.WriteString(s)
 		if err2 != nil {
 			panic(err2)
@@ -344,7 +369,6 @@ func main() {
 
 	}
 	// fmt.Println(finishedJobs)
-	uiprogress.Stop()
 
 	fmt.Printf("Completed %v jobs in %s\n", len(finishedJobs), elapsed)
 
