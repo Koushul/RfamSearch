@@ -20,8 +20,8 @@ import (
 const rfamSequenceSearchEndpoint = "https://rfam.org/search/sequence"
 
 type Job struct {
-	ID          int    //unique job id, also serves as index for the final output array
-	Sequence    string //sequence to search Rfam for
+	ID          int         //unique job id, also serves as index for the final output array
+	Sequence    DNASequence //sequence to search Rfam for
 	Status      State
 	LastChecked time.Time //last time the job status was checked via a get request
 	JobId       string    `json:"jobId"`
@@ -90,7 +90,7 @@ func (j *Job) submit(httpClient *http.Client) {
 	}
 
 	data := url.Values{}
-	data.Set("seq", j.Sequence)
+	data.Set("seq", j.Sequence.seq)
 
 	r, _ := http.NewRequest(http.MethodPost, rfamSequenceSearchEndpoint, strings.NewReader(data.Encode()))
 	r.Close = true
@@ -196,16 +196,6 @@ func (j *Job) getResults(httpClient *http.Client) {
 
 }
 
-func DNAColorize(s string) string {
-	replacer := strings.NewReplacer("A", "[red]A", "T", "[blue]T", "G", "[green]G", "C", "[yellow]C", ".....", "[white].....")
-	return replacer.Replace(s)
-}
-
-func TrimDNA(s string) string {
-	trimmed := fmt.Sprintf("%v ..... %v", s[:30], s[:30])
-	return trimmed
-}
-
 var wg sync.WaitGroup
 
 func jobSubmitter(newJobs chan Job, pendingJobs chan<- Job, client *http.Client, bar *uiprogress.Bar) {
@@ -243,8 +233,28 @@ func resultsFetcher(pendingJobs chan Job, finishedJobs []Job, client *http.Clien
 	}
 }
 
-func readFasta(filename string) []string {
-	var seqs []string
+type DNASequence struct {
+	seq    string
+	name   string
+	length int
+}
+
+func (ds *DNASequence) Colorize(autotrim bool) string {
+	s := ds.seq
+	if autotrim {
+		s = ds.TrimDNA()
+	}
+	replacer := strings.NewReplacer("A", "[red]A", "T", "[blue]T", "G", "[green]G", "C", "[yellow]C", ".....", "[white].....")
+	return replacer.Replace(s)
+}
+
+func (ds *DNASequence) TrimDNA() string {
+	trimmed := fmt.Sprintf("%v ..... %v", ds.seq[:30], ds.seq[:30])
+	return trimmed
+}
+
+func readFasta(filename string) []DNASequence {
+	var seqs []DNASequence
 
 	file, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -255,7 +265,12 @@ func readFasta(filename string) []string {
 
 	for _, entry := range data[1:] {
 		sq := strings.Split(entry, "\n")
-		seqs = append(seqs, strings.Join(sq[1:], ""))
+		longSeq := strings.Join(sq[1:], "")
+		seqs = append(seqs, DNASequence{
+			seq:    longSeq,
+			name:   sq[0],
+			length: len(longSeq),
+		})
 	}
 
 	return seqs
@@ -361,7 +376,7 @@ func main() {
 		panic(err)
 	}
 
-	header := fmt.Sprintf("%v %v %v\n", "index", "rna", "sequence")
+	header := fmt.Sprintf("%v %v %v %v %v\n", "index", "rna", "name", "length", "sequence")
 	_, errx := f.WriteString(header)
 	if errx != nil {
 		panic(errx)
@@ -372,9 +387,9 @@ func main() {
 		if rna == "" {
 			rna = "NoMatch"
 		}
-		s := fmt.Sprintf("%v \t %v \t %v\n", idx, rna, j.Sequence)
+		s := fmt.Sprintf("%v \t %v \t %v \t %v \t %v\n", idx, rna, j.Sequence.name, j.Sequence.length, j.Sequence.seq)
 		if j.Results.rna != "" {
-			colorstring.Print(DNAColorize(TrimDNA(j.Sequence)))
+			colorstring.Print(j.Sequence.Colorize(true))
 			fmt.Println("\t", j.Results.rna)
 		}
 		_, err2 := f.WriteString(s)
