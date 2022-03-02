@@ -71,16 +71,16 @@ type RNAMatch struct {
 	}
 }
 
-var serverResponses = map[int]string{
-	202: "Accepted",
-	201: "Submitted",
-	502: "Bad gateway",
-	503: "Service unavailable",
-	200: "OK",
-	410: "Gone",
-	510: "Service unvailable",
-	500: "Internal server error",
-}
+// var serverResponses = map[int]string{
+// 	202: "Accepted",
+// 	201: "Submitted",
+// 	502: "Bad gateway",
+// 	503: "Service unavailable",
+// 	200: "OK",
+// 	410: "Gone",
+// 	510: "Service unvailable",
+// 	500: "Internal server error",
+// }
 
 //Submit a sequence to Rfam
 func (j *Job) submit(httpClient *http.Client) {
