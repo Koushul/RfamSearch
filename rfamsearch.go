@@ -197,8 +197,13 @@ func (j *Job) getResults(httpClient *http.Client) {
 }
 
 func DNAColorize(s string) string {
-	replacer := strings.NewReplacer("A", "[red]A", "T", "[blue]T", "G", "[green]G", "C", "[yellow]C")
+	replacer := strings.NewReplacer("A", "[red]A", "T", "[blue]T", "G", "[green]G", "C", "[yellow]C", ".....", "[white].....")
 	return replacer.Replace(s)
+}
+
+func TrimDNA(s string) string {
+	trimmed := fmt.Sprintf("%v ..... %v", s[:30], s[:30])
+	return trimmed
 }
 
 var wg sync.WaitGroup
@@ -250,7 +255,7 @@ func readFasta(filename string) []string {
 
 	for _, entry := range data[1:] {
 		sq := strings.Split(entry, "\n")
-		seqs = append(seqs, sq[1])
+		seqs = append(seqs, strings.Join(sq[1:], ""))
 	}
 
 	return seqs
@@ -313,7 +318,6 @@ func main() {
 
 	uiprogress.Start()
 
-	// Concurrent job submission in high volume makes the server 😠
 	for w := 1; w <= 10; w++ {
 		go jobSubmitter(newJobs, pendingJobs, getClient, submittedBar)
 	}
@@ -356,10 +360,21 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	header := fmt.Sprintf("%v %v %v\n", "index", "rna", "sequence")
+	_, errx := f.WriteString(header)
+	if errx != nil {
+		panic(errx)
+	}
+
 	for idx, j := range finishedJobs {
-		s := fmt.Sprintf("%v %v\n", idx, j.Results.rna)
+		rna := j.Results.rna
+		if rna == "" {
+			rna = "NoMatch"
+		}
+		s := fmt.Sprintf("%v \t %v \t %v\n", idx, rna, j.Sequence)
 		if j.Results.rna != "" {
-			colorstring.Print(DNAColorize(j.Sequence))
+			colorstring.Print(DNAColorize(TrimDNA(j.Sequence)))
 			fmt.Println("\t", j.Results.rna)
 		}
 		_, err2 := f.WriteString(s)
@@ -373,6 +388,3 @@ func main() {
 	fmt.Printf("Completed %v jobs in %s\n", len(finishedJobs), elapsed)
 
 }
-
-//TODO: Refactor folder structures
-//TODO: Add flags & single sequence search
