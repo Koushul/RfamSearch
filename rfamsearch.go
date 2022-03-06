@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -278,6 +278,22 @@ func readFasta(filename string) []DNASequence {
 
 func main() {
 
+	tick := time.Now()
+
+	var filename string
+	var numWorkers int
+	var showProgress bool
+	var save bool
+	var seq string
+	var submitters int
+
+	flag.IntVar(&numWorkers, "n", 10, "Number of workers monitoring running jobs")
+	flag.StringVar(&filename, "f", "test.fasta", "Fasta file")
+	flag.BoolVar(&showProgress, "p", true, "Show progressbars")
+	flag.BoolVar(&save, "s", false, "Save results to file")
+	flag.StringVar(&seq, "seq", "", "Single DNA sequence")
+	flag.Parse()
+
 	//initialize shared http client
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
@@ -294,21 +310,30 @@ func main() {
 		Transport: t,
 	}
 
-	tick := time.Now()
+	var seqs []DNASequence
+	submitters = 10
 
-	filename := os.Args[1]
-	numWorkers, err := strconv.Atoi(os.Args[2])
+	fmt.Println("seq:", seq)
 
-	if err != nil {
-		panic(err)
+	if seq != "" {
+		ds := DNASequence{
+			seq:    seq,
+			name:   "",
+			length: len(seq),
+		}
+
+		seqs = append(seqs, ds)
+
+		wg.Add(1)
+		submitters = 1
+		numWorkers = 1
+
+	} else {
+		//read fasta file with input sequences
+		seqs = readFasta(filename)
+		wg.Add(len(seqs))
+
 	}
-
-	// filename := "test.fasta"
-	// numWorkers := 5
-
-	//read fasta file with input sequences
-	seqs := readFasta(filename)
-	wg.Add(len(seqs))
 
 	var finishedJobs = make([]Job, len(seqs))
 
@@ -319,21 +344,23 @@ func main() {
 	submittedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
 	completedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
 
-	jobsBar.PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("🐡 Created   %d/%d jobs", b.Current(), len(seqs))
-	})
+	if showProgress {
+		jobsBar.PrependFunc(func(b *uiprogress.Bar) string {
+			return fmt.Sprintf("🐡 Created   %d/%d jobs", b.Current(), len(seqs))
+		})
 
-	submittedBar.PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("🐒 Submitted %d/%d jobs", b.Current(), len(seqs))
-	})
+		submittedBar.PrependFunc(func(b *uiprogress.Bar) string {
+			return fmt.Sprintf("🐒 Submitted %d/%d jobs", b.Current(), len(seqs))
+		})
 
-	completedBar.PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("🦊 Completed %d/%d jobs", b.Current(), len(seqs))
-	})
+		completedBar.PrependFunc(func(b *uiprogress.Bar) string {
+			return fmt.Sprintf("🦊 Completed %d/%d jobs", b.Current(), len(seqs))
+		})
 
-	uiprogress.Start()
+		uiprogress.Start()
+	}
 
-	for w := 1; w <= 10; w++ {
+	for w := 1; w <= submitters; w++ {
 		go jobSubmitter(newJobs, pendingJobs, getClient, submittedBar)
 	}
 
@@ -363,8 +390,11 @@ func main() {
 		time.Sleep(time.Second * 5)
 	}
 
+	if showProgress {
+		uiprogress.Stop()
+	}
+
 	wg.Wait() //wg.Done() is called by resultsFetchers
-	uiprogress.Stop()
 
 	fmt.Println("")
 
