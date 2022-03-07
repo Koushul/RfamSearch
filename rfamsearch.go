@@ -308,11 +308,16 @@ func main() {
 	var submitters int
 
 	flag.IntVar(&numWorkers, "n", 10, "Number of workers monitoring running jobs")
-	flag.StringVar(&filename, "f", "test.fasta", "Fasta file")
+	flag.StringVar(&filename, "f", "", "Fasta file")
 	flag.BoolVar(&showProgress, "p", true, "Show progressbars")
 	flag.StringVar(&output, "o", "data.txt", "Output file")
 	flag.StringVar(&seq, "seq", "", "Single DNA sequence")
 	flag.Parse()
+
+	if filename == "" {
+		fmt.Println("No input files provided.")
+		os.Exit(3)
+	}
 
 	//initialize shared http client
 	t := http.DefaultTransport.(*http.Transport).Clone()
@@ -334,18 +339,13 @@ func main() {
 	submitters = 10
 
 	if seq != "" {
-
 		ds := DNASequence{
 			seq:    seq,
 			name:   "",
 			length: len(seq),
 		}
 
-		// fmt.Print("Search: ")
-		// colorstring.Println(ds.Colorize(true))
-
 		seqs = append(seqs, ds)
-
 		wg.Add(1)
 		submitters = 1
 		numWorkers = 1
@@ -357,11 +357,11 @@ func main() {
 
 	}
 
-	var finishedJobs = make([]Job, len(seqs))
-
+	finishedJobs := make([]Job, len(seqs))
 	pendingJobs := make(chan Job, len(seqs))
 	newJobs := make(chan Job, len(seqs))
 
+	//live feedbacks via multiple progressbars
 	jobsBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
 	submittedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
 	completedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
@@ -382,6 +382,7 @@ func main() {
 		uiprogress.Start()
 	}
 
+	// Submits new search jobs, moving them from the new jobs queue to the pending queue
 	for w := 1; w <= submitters; w++ {
 		go jobSubmitter(newJobs, pendingJobs, getClient, submittedBar)
 	}
@@ -392,6 +393,7 @@ func main() {
 		go resultsFetcher(pendingJobs, finishedJobs, postClient, completedBar)
 	}
 
+	//jobs are created in small batches to avoid overwhelming the rfam server
 	batchSize := 10
 
 	for i := 0; i < len(seqs); i += batchSize {
