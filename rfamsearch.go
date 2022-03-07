@@ -276,6 +276,26 @@ func readFasta(filename string) []DNASequence {
 	return seqs
 }
 
+//save results to file
+func saveToFile(outfile string, text string) {
+	f, err := os.Create(outfile)
+	if err != nil {
+		panic(err)
+	}
+
+	header := fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\n", "index", "rna", "name", "family", "length", "sequence")
+
+	_, errx := f.WriteString(header)
+	if errx != nil {
+		panic(errx)
+	}
+
+	_, err2 := f.WriteString(text)
+	if err2 != nil {
+		panic(err2)
+	}
+}
+
 func main() {
 
 	tick := time.Now()
@@ -283,14 +303,14 @@ func main() {
 	var filename string
 	var numWorkers int
 	var showProgress bool
-	var save bool
+	var output string
 	var seq string
 	var submitters int
 
 	flag.IntVar(&numWorkers, "n", 10, "Number of workers monitoring running jobs")
 	flag.StringVar(&filename, "f", "test.fasta", "Fasta file")
 	flag.BoolVar(&showProgress, "p", true, "Show progressbars")
-	flag.BoolVar(&save, "s", false, "Save results to file")
+	flag.StringVar(&output, "o", "data.txt", "Output file")
 	flag.StringVar(&seq, "seq", "", "Single DNA sequence")
 	flag.Parse()
 
@@ -313,14 +333,16 @@ func main() {
 	var seqs []DNASequence
 	submitters = 10
 
-	fmt.Println("seq:", seq)
-
 	if seq != "" {
+
 		ds := DNASequence{
 			seq:    seq,
 			name:   "",
 			length: len(seq),
 		}
+
+		// fmt.Print("Search: ")
+		// colorstring.Println(ds.Colorize(true))
 
 		seqs = append(seqs, ds)
 
@@ -400,36 +422,28 @@ func main() {
 
 	elapsed := time.Since(tick)
 
-	//save results to file and display matches
-	f, err := os.Create("data.txt")
-	if err != nil {
-		panic(err)
-	}
-
-	header := fmt.Sprintf("%v %v %v %v %v\n", "index", "rna", "name", "length", "sequence")
-	_, errx := f.WriteString(header)
-	if errx != nil {
-		panic(errx)
-	}
-
+	var s string
 	for idx, j := range finishedJobs {
 		rna := j.Results.rna
+		var fam string
 		if rna == "" {
 			rna = "NoMatch"
+		} else {
+			fam = j.Results.rnaMatch[0].Acc
 		}
-		s := fmt.Sprintf("%v \t %v \t %v \t %v \t %v\n", idx, rna, j.Sequence.name, j.Sequence.length, j.Sequence.seq)
+		s += fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\n", idx, rna, j.Sequence.name, fam, j.Sequence.length, j.Sequence.seq)
+		s += "\n"
 		if j.Results.rna != "" {
 			colorstring.Print(j.Sequence.Colorize(true))
-			fmt.Println("\t", j.Results.rna)
+			fmt.Print("\t", j.Results.rna)
+			fmt.Println("\t", j.Results.rnaMatch[0].Acc)
 		}
-		_, err2 := f.WriteString(s)
-		if err2 != nil {
-			panic(err2)
-		}
-
 	}
-	// fmt.Println(finishedJobs)
 
-	fmt.Printf("Completed %v jobs in %s\n", len(finishedJobs), elapsed)
+	if seq == "" {
+		saveToFile(output, s)
+	}
+
+	fmt.Printf("\nCompleted %v jobs in %s\n", len(finishedJobs), elapsed)
 
 }
