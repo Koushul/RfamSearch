@@ -276,14 +276,14 @@ func readFasta(filename string) []DNASequence {
 	return seqs
 }
 
-//save results to file
+//save results to file (tab separated)
 func saveToFile(outfile string, text string) {
 	f, err := os.Create(outfile)
 	if err != nil {
 		panic(err)
 	}
 
-	header := fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\n", "index", "rna", "name", "family", "length", "sequence")
+	header := fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\n", "index", "rna", "family", "length", "label", "sequence")
 
 	_, errx := f.WriteString(header)
 	if errx != nil {
@@ -302,19 +302,17 @@ func main() {
 
 	var filename string
 	var numWorkers int
-	var showProgress bool
 	var output string
 	var seq string
 	var submitters int
 
 	flag.IntVar(&numWorkers, "n", 10, "Number of workers monitoring running jobs")
 	flag.StringVar(&filename, "f", "", "Fasta file")
-	flag.BoolVar(&showProgress, "p", true, "Show progressbars")
 	flag.StringVar(&output, "o", "data.txt", "Output file")
 	flag.StringVar(&seq, "seq", "", "Single DNA sequence")
 	flag.Parse()
 
-	if filename == "" {
+	if filename == "" && seq == "" {
 		fmt.Println("No input files provided.")
 		os.Exit(3)
 	}
@@ -366,21 +364,19 @@ func main() {
 	submittedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
 	completedBar := uiprogress.AddBar(len(seqs)).AppendCompleted().PrependElapsed()
 
-	if showProgress {
-		jobsBar.PrependFunc(func(b *uiprogress.Bar) string {
-			return fmt.Sprintf("🐡 Created   %d/%d jobs", b.Current(), len(seqs))
-		})
+	jobsBar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("🐡 Created   %d/%d jobs", b.Current(), len(seqs))
+	})
 
-		submittedBar.PrependFunc(func(b *uiprogress.Bar) string {
-			return fmt.Sprintf("🐒 Submitted %d/%d jobs", b.Current(), len(seqs))
-		})
+	submittedBar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("🐒 Submitted %d/%d jobs", b.Current(), len(seqs))
+	})
 
-		completedBar.PrependFunc(func(b *uiprogress.Bar) string {
-			return fmt.Sprintf("🦊 Completed %d/%d jobs", b.Current(), len(seqs))
-		})
+	completedBar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("🦊 Completed %d/%d jobs", b.Current(), len(seqs))
+	})
 
-		uiprogress.Start()
-	}
+	uiprogress.Start()
 
 	// Submits new search jobs, moving them from the new jobs queue to the pending queue
 	for w := 1; w <= submitters; w++ {
@@ -414,11 +410,8 @@ func main() {
 		time.Sleep(time.Second * 5)
 	}
 
-	if showProgress {
-		uiprogress.Stop()
-	}
-
 	wg.Wait() //wg.Done() is called by resultsFetchers
+	uiprogress.Stop()
 
 	fmt.Println("")
 
@@ -433,7 +426,7 @@ func main() {
 		} else {
 			fam = j.Results.rnaMatch[0].Acc
 		}
-		s += fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\n", idx, rna, j.Sequence.name, fam, j.Sequence.length, j.Sequence.seq)
+		s += fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\n", idx, rna, fam, j.Sequence.length, j.Sequence.name, j.Sequence.seq)
 		s += "\n"
 		if j.Results.rna != "" {
 			colorstring.Print(j.Sequence.Colorize(true))
